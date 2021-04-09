@@ -1,0 +1,5 @@
+<launch>
+	<arg name="mode" />
+
+	<node pkg="capture_the_flag" type="test.py" name="test" output="screen"></node>
+</launch>
