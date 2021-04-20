@@ -1,0 +1,72 @@
+<launch>
+  <!-- Arguments -->
+  <arg name="robot_team" default="1"/>
+  <arg name="robot_number" default="1"/>
+  <arg name="tf_prefix" default="robot$(arg robot_team)_tf_$(arg robot_number)"/>
+  <arg name="ns_prefix" default="robot$(arg robot_team)_$(arg robot_number)"/>
+
+  <arg name="model" default="burger" doc="model type [burger, waffle, waffle_pi]"/>
+  <arg name="slam_methods" default="gmapping" doc="slam type [gmapping]"/>
+  <arg name="configuration_basename" default="turtlebot3_lds_2d.lua"/>
+  <arg name="set_map_frame"  default="/$(arg ns_prefix)/map"/>
+  <arg name="open_rviz" default="false"/>
+  <arg name="set_base_frame" default="$(arg tf_prefix)/base_footprint"/>
+  <arg name="set_odom_frame" default="$(arg tf_prefix)/odom"/>
+
+  <!-- TurtleBot3 -->
+  <include file="$(find turtlebot3_bringup)/launch/includes/description.launch.xml">
+    <arg name="model" value="$(arg model)" />
+  </include>
+  <node pkg="robot_state_publisher" type="robot_state_publisher" name="$(arg ns_prefix)_robot_state_publisher">
+    <param name="publish_frequency" type="double" value="50.0" />
+    <param name="tf_prefix" value="$(arg tf_prefix)"/>
+  </node>
+  <node pkg="tf" type="static_transform_publisher" name="$(arg ns_prefix)_map_broadcaster" args="0 0 0 0 0 0 $(arg set_map_frame) /$(arg ns_prefix)/occupancy_grid 100" />
+
+  <!-- SLAM: Gmapping -->
+  <node pkg="gmapping" type="slam_gmapping" name="$(arg ns_prefix)_turtlebot3_slam_gmapping" output="screen">
+    <remap from="scan" to="$(arg ns_prefix)/scan"/>
+    <remap from="occupancy_grid" to="/$(arg ns_prefix)/occupancy_grid"/>
+    <remap from="map" to="$(arg set_map_frame)"/>
+    <param name="base_frame" value="$(arg set_base_frame)"/>
+    <param name="odom_frame" value="$(arg set_odom_frame)"/>
+    <param name="map_frame"  value="$(arg set_map_frame)"/>
+    <param name="map_update_interval" value="3.0"/>
+    <param name="maxUrange" value="1.0"/>
+    <param name="sigma" value="0.05"/>
+    <param name="kernelSize" value="1"/>
+    <param name="lstep" value="0.05"/>
+    <param name="astep" value="0.05"/>
+    <param name="iterations" value="5"/>
+    <param name="lsigma" value="0.075"/>
+    <param name="ogain" value="3.0"/>
+    <param name="lskip" value="0"/>
+    <param name="minimumScore" value="50"/>
+    <param name="srr" value="0.1"/>
+    <param name="srt" value="0.2"/>
+    <param name="str" value="0.1"/>
+    <param name="stt" value="0.2"/>
+    <param name="linearUpdate" value="1.0"/>
+    <param name="angularUpdate" value="0.2"/>
+    <param name="temporalUpdate" value="0.5"/>
+    <param name="resampleThreshold" value="0.5"/>
+    <param name="particles" value="100"/>
+    <param name="xmin" value="-10.0"/>
+    <param name="ymin" value="-10.0"/>
+    <param name="xmax" value="10.0"/>
+    <param name="ymax" value="10.0"/>
+    <param name="delta" value="0.05"/>
+    <param name="llsamplerange" value="0.01"/>
+    <param name="llsamplestep" value="0.01"/>
+    <param name="lasamplerange" value="0.005"/>
+    <param name="lasamplestep" value="0.005"/>
+  </node>
+
+  <!-- rviz -->
+  <group if="$(arg open_rviz)">
+    <node pkg="rviz" type="rviz" name="rviz" required="true"
+          args="-d $(find capture_the_flag)/launch/gmapping.rviz">
+
+    </node>
+  </group>
+</launch>

@@ -6,11 +6,14 @@
   <arg name="use_gui" default="true"/>
 
   <arg name="model" default="burger" doc="model type [burger, waffle, waffle_pi]"/>
-  <arg name="x_pos" default="-1.0"/>
-  <arg name="y_pos" default="-1.0"/>
   <arg name="z_pos" default="0.0"/>
+  <arg name="total_robots" default="4"/>
+  <arg name="robot_number" default="0"/>
 
-  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+  <arg name="team" default="both"/>
+
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch" if="$(eval arg('robot_number')==0)">
     <arg name="world_name" value="$(find capture_the_flag)/worlds/simple.world"/>
     <arg name="paused" value="true"/>
     <arg name="use_sim_time" value="true"/>
@@ -21,5 +24,20 @@
 
   <param name="robot_description" command="$(find xacro)/xacro --inorder $(find turtlebot3_description)/urdf/turtlebot3_$(arg model).urdf.xacro" />
 
-  <node pkg="gazebo_ros" type="spawn_model" name="spawn_urdf"  args="-urdf -model turtlebot3_$(arg model) -x $(arg x_pos) -y $(arg y_pos) -z $(arg z_pos) -param robot_description" />
+  <group ns="$(eval 'robot1_'+str(arg('robot_number')))" if="$(eval arg('team') in ('both', 1))">
+    <param name="tf_prefix" value="$(eval 'robot1_tf_'+str(arg('robot_number')))" />
+  <node pkg="gazebo_ros" type="spawn_model" name="$(eval 'robot1_'+str(arg('robot_number')))"  args="$(eval '-urdf -model turtlebot3_1_'+str(arg('robot_number'))+arg('model')+' -x -1.25 -y '+str(-1.25 + 0.3 * arg('robot_number'))+' -z '+str(arg('z_pos'))+' -param /robot_description')">
+  </node>
+  </group>
+  <group ns="$(eval 'robot2_'+str(arg('robot_number')))" if="$(eval arg('team') in ('both', 2))">
+    <param name="tf_prefix" value="$(eval 'robot2_tf_'+str(arg('robot_number')))" />
+  <node pkg="gazebo_ros" type="spawn_model" name="$(eval 'robot2_'+str(arg('robot_number')))"  args="$(eval '-urdf -model turtlebot3_2_'+str(arg('robot_number'))+arg('model')+' -x 1.25 -y '+str(1.25 - 0.3 * arg('robot_number'))+' -z '+str(arg('z_pos'))+' -Y 3.14159 -param /robot_description')">
+  </node>
+  </group>
+
+  <include file="$(find capture_the_flag)/launch/gazebo_simple.launch" if="$(eval arg('total_robots') > arg('robot_number') + 1)">
+      <arg name="robot_number" value="$(eval arg('robot_number') + 1)"/>
+      <arg name="total_robots" value="$(arg total_robots)"/>
+      <arg name="team" value="$(arg team)"/>
+   </include>
 </launch>

@@ -1,0 +1,7 @@
+stuff to do:
+    multiple SLAM robots wandering
+
+Area coverage:
+    divide world into grid cells depending on search radius
+    divide arena into chunks, each zig-zags through the area
+    when done,

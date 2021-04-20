@@ -1,0 +1,13 @@
+argparse~=1.2.1
+matplotlib~=1.5.1
+numpy~=1.16.6
+scipy~=0.17.0
+PyYAML~=3.11
+pip~=20.3.4
+wheel~=0.36.2
+cryptography~=1.2.3
+ipaddress~=1.0.16
+keyring~=7.3
+setuptools~=20.7.0
+rospy~=1.12.17
+tf~=1.11.9

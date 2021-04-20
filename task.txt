@@ -1,0 +1,28 @@
+There are two teams operating in the same environment (using the same map).
+Each team has a flag and tries to find and steal the opponent’s flag.
+Implement the following two tasks.
+    (1) Exploration:  the  team  of  robots  needs  to  explore  the  map  to  gather  information
+        (e.g.,using formation control, leader-follower, or area coverage)
+    (2) protect the flag:  the team protects  their  flag  from  adversarial  attacks
+        (e.g.,  using  formation  control  or  cyclic  pursuit).Show the implemented strategies
+        for the two tasks in simulation (modeling the opponents is not required).
+
+You are free to design the map/environment.
+
+Extensions: Implement a decoy strategy to steal the flag (e.g., using formation control, leader-follower).
+
+Deliverables
+Report:
+    Format and length as described above - 6 page double column
+    The report should contain a
+        (i) description of the problem,
+        (ii) your approach, and the technical details of your algorithm,
+        (iii) your results, including details on how you ran the experiments,
+                and plots that demonstrate your robots’ performance
+        (iv) conclusion  (summary  of  achievements), and
+        (v) brief  statement  of group member contributions (as applicable).
+Movie:
+    Demonstration of your results in a simulator environment (e.g., Gazebo) showing the robots in action,
+    solving the task at hand.
+Code:
+    Provide pointer to code repository.
