@@ -7,10 +7,12 @@ from __future__ import print_function
 import argparse
 import os
 from collections import deque
+import json
 
 import rospy
 import sys
 import numpy as np
+import std_msgs.msg
 
 import robot_control
 import rrt
@@ -23,9 +25,9 @@ sys.path.insert(0, directory)
 
 class Exploring(object):
     def __init__(self, ground_truth_pose, planner, robot_number, rate_limiter):
-        # type: (robot_control.GroundTruthPose, robot_control.MovementPlanner, int) -> None
-        self.planner = ground_truth_pose
-        self.rrt_controller = planner
+        # type: (robot_control.GroundTruthPose, robot_control.PotentialField, int, rospy.Rate) -> None
+        self.ground_truth_pose = ground_truth_pose
+        self.planner = planner
         self.robot_number = robot_number
         self.rate_limiter = rate_limiter
 
@@ -48,10 +50,46 @@ class Exploring(object):
         self.choose_order(my_waypoints)
         my_waypoints[1::2, :] = my_waypoints[1::2, ::-1]
 
-        self.waypoints = (tuple(index) for index in my_waypoints.reshape((-1, 2)))
-        self.current_waypoint = next(self.waypoints)
+        self.waypoints = [tuple(index) for index in my_waypoints.reshape((-1, 2))]
+        self.current_waypoint = 0
 
-        self.reachable_cache = {'queue': deque(maxlen=4), 'map': {}}
+        self.area_requests = rospy.Publisher('/area_requests', std_msgs.msg.String, queue_size=3)
+        rospy.Subscriber('/area_requests', std_msgs.msg.String, self.on_area_request)
+
+        self.collected_adverts = []
+        self.awaiting_adverts = None
+
+    def on_area_request(self, msg):
+        msg = json.loads(msg.data)
+        if msg['type'] == 'area_request':
+            if self.current_waypoint < len(self.waypoints) - 1:
+                closest = min(
+                    np.linalg.norm(np.array(msg['position']) - point)
+                    for wp in self.waypoints[self.current_waypoint + 1:]
+                    for point in (self.visited_grid_center_coords[wp],)
+                )
+                advert = {'type': 'area_advert', 'sender': self.robot_number, 'closest': closest}
+                self.area_requests.publish(json.dumps(advert))
+        elif msg['type'] == 'area_advert':
+            if not (self.current_waypoint < len(self.waypoints)):
+                self.collected_adverts.append(msg)
+        elif msg['type'] == 'specific_request':
+            if msg['recipient'] == self.robot_number:
+                remaining = len(self.waypoints) - self.current_waypoint
+                if remaining > 0:
+                    mid = (len(self.waypoints) + self.current_waypoint + 1) // 2
+                    mine, yours = self.waypoints[:mid], self.waypoints[mid:]
+                    self.waypoints = mine
+
+                    reply = {'type': 'grant', 'recipient': msg['sender'], 'waypoints': yours}
+                    self.area_requests.publish(json.dumps(reply))
+        elif msg['type'] == 'grant':
+            if msg['recipient'] == self.robot_number:
+                self.waypoints = [tuple(waypoint) for waypoint in msg['waypoints']]
+                self.current_waypoint = 0
+
+                self.awaiting_adverts = None
+                self.collected_adverts = []
 
     def get_range(self, grid_shape):
         lower_number = 0
@@ -78,7 +116,7 @@ class Exploring(object):
         while not self.planner.ready:
             self.rate_limiter.sleep()
 
-        pos = self.planner.pose[:2]
+        pos = self.ground_truth_pose.pose[:2]
         grid_dists = self.visited_grid_center_coords - pos
         grid_dists = np.linalg.norm(grid_dists, axis=2)
 
@@ -95,73 +133,44 @@ class Exploring(object):
 
     def update(self):
         done_waypoint = False
-        waypoint = self.visited_grid_center_coords[self.current_waypoint]
-        try:
+
+        waypoint_index = 0
+        if self.current_waypoint < len(self.waypoints):
+            waypoint_index = self.waypoints[self.current_waypoint]
+            waypoint = self.visited_grid_center_coords[waypoint_index]
+
             if not np.any(np.linalg.norm(waypoint - OBSTACLE_POSITIONS, axis=1) < OBSTACLE_RADIUS):
-                done_waypoint = self.rrt_controller.navigate_towards(waypoint)
-        except robot_control.NavigationError:
-            if self.slam.occupancy_grid.is_occupied(waypoint):
-                done_waypoint = True
+                done_waypoint = self.planner.navigate_towards(waypoint)
+        else:
+            done_waypoint = True
 
         if done_waypoint:
-            try:
-                self.visited_grid[self.current_waypoint] = True
-                self.current_waypoint = next(self.waypoints)
-                print("next waypoint:", self.current_waypoint)
-            except StopIteration:
-                return True
+            if self.current_waypoint < len(self.waypoints):
+                self.visited_grid[waypoint_index] = True
+                self.current_waypoint += 1
+                print("next waypoint:", waypoint_index)
+            else:
+                if self.awaiting_adverts is None:
+                    self.planner.command_velocity.set_velocity(0, 0)
 
+                    self.send_area_request()
+                elif rospy.Time.now().to_sec() - self.awaiting_adverts > 1.5:
+                    if self.collected_adverts:
+                        best = min(self.collected_adverts, key=lambda advert: advert['closest'])
+                        msg = {'type': 'specific_request', 'recipient': best['sender'], 'sender': self.robot_number}
+                        self.area_requests.publish(json.dumps(msg))
+
+                        self.send_area_request()
+                    else:
+                        return True
         else:
             return False
 
-    def flood_occupied(self, start_point, radius=6):
-        start_point_t = tuple(start_point)
-        cache_queue = self.reachable_cache['queue']
-        cache_map = self.reachable_cache['map']
-
-        if start_point_t in cache_map:
-            result, attempts = cache_map[start_point_t]
-            if attempts < 10:
-                cache_map[start_point_t] = (result, attempts + 1)
-                return result
-            else:
-                del cache_map[start_point_t]
-                cache_queue.remove(start_point_t)
-
-        result = self.do_flood_occupied(start_point, radius)
-        if len(cache_queue) == cache_queue.maxlen:
-            old_point = cache_queue.popleft()
-            del cache_map[old_point]
-
-        cache_queue.append(start_point_t)
-        cache_map[start_point_t] = (result, 0)
-
-        return result
-
-    def do_flood_occupied(self, start_point, radius=6):
-        # type: (np.ndarray, int) -> bool
-        print('do_flood_occupied')
-        start_point = np.array(self.slam.occupancy_grid.get_index(start_point))
-
-        to_flood = deque()
-        to_flood.append(tuple(start_point))
-
-        flooded = set()
-
-        while to_flood:
-            p = np.array(to_flood.popleft())
-            if np.linalg.norm(p - start_point) > radius:
-                return False
-
-            for angle in np.arange(4) * np.pi / 2:
-                direction_vector = np.array([np.cos(angle), np.sin(angle)])
-                new_point = tuple(np.int32(np.round(p + direction_vector)))
-                free = self.slam.occupancy_grid.values[new_point] != rrt.OCCUPIED
-                if new_point not in flooded and free:
-                    to_flood.append(new_point)
-                    flooded.add(new_point)
-
-        return True
+    def send_area_request(self):
+        self.awaiting_adverts = rospy.Time.now().to_sec()
+        request = {'type': 'area_request', 'position': self.ground_truth_pose.pose[:2].tolist()}
+        self.area_requests.publish(json.dumps(request))
+        self.collected_adverts = []
 
 
 def run(args):
