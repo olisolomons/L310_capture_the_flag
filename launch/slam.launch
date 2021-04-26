@@ -31,15 +31,15 @@
     <param name="base_frame" value="$(arg set_base_frame)"/>
     <param name="odom_frame" value="$(arg set_odom_frame)"/>
     <param name="map_frame"  value="$(arg set_map_frame)"/>
-    <param name="map_update_interval" value="3.0"/>
-    <param name="maxUrange" value="1.0"/>
+    <param name="map_update_interval" value="1.0"/>
+    <param name="maxUrange" value="1.75"/>
     <param name="sigma" value="0.05"/>
     <param name="kernelSize" value="1"/>
     <param name="lstep" value="0.05"/>
     <param name="astep" value="0.05"/>
     <param name="iterations" value="5"/>
     <param name="lsigma" value="0.075"/>
-    <param name="ogain" value="3.0"/>
+    <param name="ogain" value="1212"/>
     <param name="lskip" value="0"/>
     <param name="minimumScore" value="50"/>
     <param name="srr" value="0.1"/>
@@ -66,7 +66,7 @@
   <group if="$(arg open_rviz)">
     <node pkg="rviz" type="rviz" name="rviz" required="true"
           args="-d $(find capture_the_flag)/launch/gmapping.rviz">
-
     </node>
+    <node pkg="tf" type="static_transform_publisher" name="$(arg ns_prefix)_map_to_map" args="0 0 0 0 0 0 $(arg set_map_frame) /map 100" />
   </group>
 </launch>

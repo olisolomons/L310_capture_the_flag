@@ -5,178 +5,163 @@ from __future__ import division
 from __future__ import print_function
 
 import argparse
-import numpy as np
 import os
+from collections import deque
+
 import rospy
 import sys
-import heapq
-import traceback
+import numpy as np
 
-# Robot motion commands:
-# http://docs.ros.org/api/geometry_msgs/html/msg/Twist.html
-from geometry_msgs.msg import Twist
-# Occupancy grid.
-from nav_msgs.msg import OccupancyGrid
-# Position.
-from tf import TransformListener
-# Goal.
-from geometry_msgs.msg import PoseStamped
-# Path.
-from nav_msgs.msg import Path
-# For pose information.
-from tf.transformations import euler_from_quaternion
+import robot_control
+import rrt
+from slam import SLAM
+from constants import *
 
-# Import the potential_field.py code rather than copy-pasting.
 directory = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../python')
 sys.path.insert(0, directory)
-try:
-    import rrt
-except ImportError:
-    raise ImportError('Unable to import potential_field.py. Make sure this file is in "{}"'.format(directory))
-
-SPEED = .2
-EPSILON = .1
-
-X = 0
-Y = 1
-YAW = 2
 
 
-def feedback_linearized(pose, velocity, epsilon):
-    yaw = pose[YAW]
-    u = velocity[0] * np.cos(yaw) + velocity[1] * np.sin(yaw)  # [m/s]
-    w = (-velocity[0] * np.sin(yaw) + velocity[1] * np.cos(yaw)) / epsilon  # [rad/s] going counter-clockwise.
-    return u, w
+class Exploring(object):
+    def __init__(self, ground_truth_pose, planner, robot_number, rate_limiter):
+        # type: (robot_control.GroundTruthPose, robot_control.MovementPlanner, int) -> None
+        self.planner = ground_truth_pose
+        self.rrt_controller = planner
+        self.robot_number = robot_number
+        self.rate_limiter = rate_limiter
 
+        grid_cell_size = 2 * SENSOR_RANGE / np.sqrt(2)
+        number_of_cells = int(np.ceil(WALL_OFFSET * 2 / grid_cell_size))
+        grid_cell_size = WALL_OFFSET * 2 / number_of_cells
+        self.visited_grid = np.zeros((number_of_cells, number_of_cells), dtype=np.bool)
+        self.visited_grid_center_coords = np.stack(np.meshgrid(
+            *(
+                 np.linspace(
+                     -WALL_OFFSET + grid_cell_size / 2,
+                     WALL_OFFSET - grid_cell_size / 2, number_of_cells
+                 ),
+             ) * 2
+        ), axis=2)
 
-def get_velocity(position, path_points):
-    v = np.zeros_like(position)
-    if len(path_points) == 0:
-        return v
-    # Stop moving if the goal is reached.
-    if np.linalg.norm(position - path_points[-1]) < .2:
-        return v
+        waypoints_array = np.array(list(np.ndindex(*self.visited_grid.shape))).reshape(self.visited_grid.shape + (-1,))
+        self.my_indices = self.get_range(self.visited_grid.shape)
+        my_waypoints = waypoints_array[self.my_indices]
+        self.choose_order(my_waypoints)
+        my_waypoints[1::2, :] = my_waypoints[1::2, ::-1]
 
-    (a, _), (b, _) = heapq.nsmallest(2, enumerate(path_points), key=lambda (i, p): np.linalg.norm(p - position))
-    i = max(a, b)
+        self.waypoints = (tuple(index) for index in my_waypoints.reshape((-1, 2)))
+        self.current_waypoint = next(self.waypoints)
 
-    if np.linalg.norm(position - path_points[i]) < .025:
-        i += 1
+        self.reachable_cache = {'queue': deque(maxlen=4), 'map': {}}
 
-    v = path_points[i] - position
+    def get_range(self, grid_shape):
+        lower_number = 0
+        upper_number = TEAM_SIZE
 
-    return v / np.linalg.norm(v) * SPEED
+        dim_index = 0
 
+        ranges = [[0, grid_shape[0]], [0, grid_shape[1]]]
 
-class SLAM(object):
-    def __init__(self, team, number):
-        self.robot_id = (team, number)
+        while upper_number - lower_number > 1:
+            mid = (lower_number + upper_number) // 2
+            if self.robot_number < mid:
+                upper_number = mid
+                ranges[dim_index][1] = sum(ranges[dim_index]) // 2
+            else:
+                lower_number = mid
+                ranges[dim_index][0] = sum(ranges[dim_index]) // 2
 
-        rospy.Subscriber('/robot%d_%d/map' % self.robot_id, OccupancyGrid, self.callback)
-        self._tf = TransformListener()
-        self._occupancy_grid = None
-        self._pose = np.array([np.nan, np.nan, np.nan], dtype=np.float32)
+            dim_index = (dim_index + 1) % len(grid_shape)
 
-    def callback(self, msg):
-        values = np.array(msg.data, dtype=np.int8).reshape((msg.info.width, msg.info.height))
-        processed = np.empty_like(values)
-        processed[:] = rrt.FREE
-        processed[values < 0] = rrt.UNKNOWN
-        processed[values > 50] = rrt.OCCUPIED
-        processed = processed.T
-        origin = [msg.info.origin.position.x, msg.info.origin.position.y, 0.]
-        resolution = msg.info.resolution
-        self._occupancy_grid = rrt.OccupancyGrid(processed, origin, resolution)
+        return tuple(slice(*r) for r in ranges)
+
+    def choose_order(self, waypoints):
+        while not self.planner.ready:
+            self.rate_limiter.sleep()
+
+        pos = self.planner.pose[:2]
+        grid_dists = self.visited_grid_center_coords - pos
+        grid_dists = np.linalg.norm(grid_dists, axis=2)
+
+        def grid_dist_at(x, y):
+            return grid_dists[tuple(waypoints[x, y])]
+
+        bottom = min(grid_dist_at(0, 0), grid_dist_at(0, -1))
+        top = min(grid_dist_at(-1, 0), grid_dist_at(-1, -1))
+        if top < bottom:
+            waypoints[:] = waypoints[::-1]
+
+        if grid_dist_at(0, -1) < grid_dist_at(0, 0):
+            waypoints[:, :] = waypoints[:, ::-1]
 
     def update(self):
-        # Get pose w.r.t. map.
-        a = 'robot%d_%d/occupancy_grid' % self.robot_id
-        b = 'robot%d_tf_%d/base_link' % self.robot_id
-        if self._tf.frameExists(a) and self._tf.frameExists(b):
+        done_waypoint = False
+        waypoint = self.visited_grid_center_coords[self.current_waypoint]
+        try:
+            if not np.any(np.linalg.norm(waypoint - OBSTACLE_POSITIONS, axis=1) < OBSTACLE_RADIUS):
+                done_waypoint = self.rrt_controller.navigate_towards(waypoint)
+        except robot_control.NavigationError:
+            if self.slam.occupancy_grid.is_occupied(waypoint):
+                done_waypoint = True
+
+        if done_waypoint:
             try:
-                t = rospy.Time(0)
-                position, orientation = self._tf.lookupTransform(a, b, t)
-                self._pose[X] = position[X]
-                self._pose[Y] = position[Y]
-                _, _, self._pose[YAW] = euler_from_quaternion(orientation)
-            except Exception as e:
-                traceback.print_exc()
-                print(e)
+                self.visited_grid[self.current_waypoint] = True
+                self.current_waypoint = next(self.waypoints)
+                print("next waypoint:", self.current_waypoint)
+            except StopIteration:
+                return True
+
         else:
-            print('Unable to find: %s=%s, %s=%s' % (a, self._tf.frameExists(a), b, self._tf.frameExists(b)))
-        pass
+            return False
 
-    @property
-    def ready(self):
-        return self._occupancy_grid is not None and not np.isnan(self._pose[0])
+    def flood_occupied(self, start_point, radius=6):
+        start_point_t = tuple(start_point)
+        cache_queue = self.reachable_cache['queue']
+        cache_map = self.reachable_cache['map']
 
-    @property
-    def pose(self):
-        return self._pose
+        if start_point_t in cache_map:
+            result, attempts = cache_map[start_point_t]
+            if attempts < 10:
+                cache_map[start_point_t] = (result, attempts + 1)
+                return result
+            else:
+                del cache_map[start_point_t]
+                cache_queue.remove(start_point_t)
 
-    @property
-    def occupancy_grid(self):
-        return self._occupancy_grid
+        result = self.do_flood_occupied(start_point, radius)
+        if len(cache_queue) == cache_queue.maxlen:
+            old_point = cache_queue.popleft()
+            del cache_map[old_point]
 
+        cache_queue.append(start_point_t)
+        cache_map[start_point_t] = (result, 0)
 
-class GoalPose(object):
-    def __init__(self):
-        rospy.Subscriber('/move_base_simple/goal', PoseStamped, self.callback)
-        self._position = np.array([np.nan, np.nan], dtype=np.float32)
+        return result
 
-    def callback(self, msg):
-        # The pose from RViz is with respect to the "map".
-        self._position[X] = msg.pose.position.x
-        self._position[Y] = msg.pose.position.y
-        print('Received new goal position:', self._position)
+    def do_flood_occupied(self, start_point, radius=6):
+        # type: (np.ndarray, int) -> bool
+        print('do_flood_occupied')
+        start_point = np.array(self.slam.occupancy_grid.get_index(start_point))
 
-    @property
-    def ready(self):
-        return not np.isnan(self._position[0])
+        to_flood = deque()
+        to_flood.append(tuple(start_point))
 
-    @property
-    def position(self):
-        return self._position
+        flooded = set()
 
+        while to_flood:
+            p = np.array(to_flood.popleft())
+            if np.linalg.norm(p - start_point) > radius:
+                return False
 
-def get_path(final_node):
-    # Construct path from RRT solution.
-    if final_node is None:
-        return []
-    path_reversed = []
-    path_reversed.append(final_node)
-    while path_reversed[-1].parent is not None:
-        path_reversed.append(path_reversed[-1].parent)
-    path = list(reversed(path_reversed))
-    # Put a point every 5 cm.
-    distance = 0.05
-    offset = 0.
-    points_x = []
-    points_y = []
-    for u, v in zip(path, path[1:]):
-        center, radius = rrt.find_circle(u, v)
-        du = u.position - center
-        theta1 = np.arctan2(du[1], du[0])
-        dv = v.position - center
-        theta2 = np.arctan2(dv[1], dv[0])
-        # Check if the arc goes clockwise.
-        clockwise = np.cross(u.direction, du).item() > 0.
-        # Generate a point every 5cm apart.
-        da = distance / radius
-        offset_a = offset / radius
-        if clockwise:
-            da = -da
-            offset_a = -offset_a
-            if theta2 > theta1:
-                theta2 -= 2. * np.pi
-        else:
-            if theta2 < theta1:
-                theta2 += 2. * np.pi
-        angles = np.arange(theta1 + offset_a, theta2, da)
-        offset = distance - (theta2 - angles[-1]) * radius
-        points_x.extend(center[X] + np.cos(angles) * radius)
-        points_y.extend(center[Y] + np.sin(angles) * radius)
-    return zip(points_x, points_y)
+            for angle in np.arange(4) * np.pi / 2:
+                direction_vector = np.array([np.cos(angle), np.sin(angle)])
+                new_point = tuple(np.int32(np.round(p + direction_vector)))
+                free = self.slam.occupancy_grid.values[new_point] != rrt.OCCUPIED
+                if new_point not in flooded and free:
+                    to_flood.append(new_point)
+                    flooded.add(new_point)
+
+        return True
 
 
 def run(args):
@@ -186,96 +171,38 @@ def run(args):
 
     # Update control every 100 ms.
     rate_limiter = rospy.Rate(100)
-    publisher = rospy.Publisher('/%s/cmd_vel' % ns_prefix, Twist, queue_size=5)
-    path_publisher = rospy.Publisher('/path', Path, queue_size=1)
-    slam = SLAM(args.team, args.number)
-    goal = GoalPose()
-    frame_id = 0
-    current_path = []
-    previous_time = rospy.Time.now().to_sec()
+    command_velocity = robot_control.CommandVelocity('/%s/cmd_vel' % ns_prefix)
+    # slam = SLAM(args.team, args.number)
+    ground_truth_pose = robot_control.GroundTruthPose((args.team, args.number))
 
-    # Stop moving message.
-    stop_msg = Twist()
-    stop_msg.linear.x = 0.
-    stop_msg.angular.z = 0.
-
-    # Make sure the robot is stopped.
-    i = 0
-    while i < 10 and not rospy.is_shutdown():
-        publisher.publish(stop_msg)
-        rate_limiter.sleep()
-        i += 1
+    planner = robot_control.PotentialField(command_velocity, ground_truth_pose, args.team, args.number)
+    exploring_behaviour = Exploring(ground_truth_pose, planner, args.number, rate_limiter)
 
     while not rospy.is_shutdown():
-        slam.update()
-        current_time = rospy.Time.now().to_sec()
+        # slam.update()
 
-        # Make sure all measurements are ready.
-        # Get map and current position through SLAM:
-        # > roslaunch exercises slam.launch
-        if not goal.ready or not slam.ready:
+        # if not (slam.ready and ground_truth_pose.ready):
+        if not (ground_truth_pose.ready and planner.ready):
             rate_limiter.sleep()
             continue
 
-        goal_reached = np.linalg.norm(slam.pose[:2] - goal.position) < .2
-        if goal_reached:
-            publisher.publish(stop_msg)
-            rate_limiter.sleep()
-            continue
-
-        # Follow path using feedback linearization.
-        position = np.array([
-            slam.pose[X] + EPSILON * np.cos(slam.pose[YAW]),
-            slam.pose[Y] + EPSILON * np.sin(slam.pose[YAW])], dtype=np.float32)
-        v = get_velocity(position, np.array(current_path, dtype=np.float32))
-        u, w = feedback_linearized(slam.pose, v, epsilon=EPSILON)
-        vel_msg = Twist()
-        vel_msg.linear.x = u
-        vel_msg.angular.z = w
-        publisher.publish(vel_msg)
-
-        # Update plan every 1s.
-        time_since = current_time - previous_time
-        if current_path and time_since < 2.:
-            rate_limiter.sleep()
-            continue
-        previous_time = current_time
-
-        print('slam.pose', slam.pose)
-        # Run RRT.
-        start_node, final_node = rrt.rrt(slam.pose, goal.position, slam.occupancy_grid)
-        current_path = get_path(final_node)
-        if not current_path:
-            print('Unable to reach goal position:', goal.position)
-
-        map_frame = '/%s/map' % ns_prefix
-
-        # Publish path to RViz.
-        path_msg = Path()
-        path_msg.header.seq = frame_id
-        path_msg.header.stamp = rospy.Time.now()
-        path_msg.header.frame_id = map_frame
-        for u in current_path:
-            pose_msg = PoseStamped()
-            pose_msg.header.seq = frame_id
-            pose_msg.header.stamp = path_msg.header.stamp
-            pose_msg.header.frame_id = map_frame
-            pose_msg.pose.position.x = u[X]
-            pose_msg.pose.position.y = u[Y]
-            path_msg.poses.append(pose_msg)
-        path_publisher.publish(path_msg)
+        if exploring_behaviour is not None:
+            done = exploring_behaviour.update()
+            if done:
+                exploring_behaviour = None
+                command_velocity.set_velocity(0, 0)
+                print('%s done' % ns_prefix)
 
         rate_limiter.sleep()
-        frame_id += 1
 
 
 if __name__ == '__main__':
+    np.seterr(all='raise')
     parser = argparse.ArgumentParser(description='Runs RRT navigation')
     parser.add_argument('--team', help='Robot team', type=int)
     parser.add_argument('--number', help='Robot number', type=int)
 
     args, unknown = parser.parse_known_args()
-    print(args)
     try:
         run(args)
     except rospy.ROSInterruptException:

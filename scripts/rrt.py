@@ -12,6 +12,7 @@ import scipy.signal
 import yaml
 
 # Constants used for indexing.
+
 X = 0
 Y = 1
 XY = slice(None, 2)
@@ -25,13 +26,13 @@ OCCUPIED = 2
 ROBOT_RADIUS = 0.105 / 2.
 GOAL_POSITION = np.array([1.5, 1.5], dtype=np.float32)  # Any orientation is good.
 START_POSE = np.array([-1.5, -1.5, 0.], dtype=np.float32)
-MAX_ITERATIONS = 500
+MAX_ITERATIONS = 400
 
 
 def sample_random_position(occupancy_grid):
     while True:
-        position = (np.random.random(2) - 0.5) * 4
-        if occupancy_grid.is_free(position):
+        position = (np.random.random(2) - 0.5) * 8
+        if not occupancy_grid.is_occupied(position):
             return position
 
 
@@ -77,7 +78,7 @@ def adjust_pose(node, final_position, occupancy_grid):
     # find all the points in the arc
     intermediary_poses = radius * np.stack((np.cos(intermediary_angles), np.sin(intermediary_angles)), axis=1) + center
     # if the arc intersects wth an obstacle, discard the node
-    if not np.all(occupancy_grid.is_free(intermediary_poses)):
+    if not np.all(np.logical_not(occupancy_grid.is_occupied(intermediary_poses))):
         return None
     else:
         return final_node
@@ -192,7 +193,7 @@ def rrt(start_pose, goal_position, occupancy_grid):
     graph = []
     start_node = Node(start_pose)
     final_node = None
-    if not occupancy_grid.is_free(goal_position):
+    if occupancy_grid.is_occupied(goal_position):
         print('Goal position is not in the free space.')
         return start_node, final_node
     graph.append(start_node)
@@ -208,7 +209,7 @@ def rrt(start_pose, goal_position, occupancy_grid):
         # We also verify that the angles are aligned (within pi / 4).
         u = None
         for n, d in potential_parent:
-            if d > .2 and d < 1.5 and n.direction.dot(position - n.position) / d > 0.70710678118:
+            if .2 < d < 3 and n.direction.dot(position - n.position) / d > 0.70710678118:
                 u = n
                 break
         else:
@@ -352,3 +353,43 @@ if __name__ == '__main__':
     plt.ylim([-.5 - 2., 2. + .5])
 
     plt.show()
+
+
+def get_path(final_node):
+    # Construct path from RRT solution.
+    if final_node is None:
+        return []
+    path_reversed = []
+    path_reversed.append(final_node)
+    while path_reversed[-1].parent is not None:
+        path_reversed.append(path_reversed[-1].parent)
+    path = list(reversed(path_reversed))
+    # Put a point every 5 cm.
+    distance = 0.05
+    offset = 0.
+    points_x = []
+    points_y = []
+    for u, v in zip(path, path[1:]):
+        center, radius = find_circle(u, v)
+        du = u.position - center
+        theta1 = np.arctan2(du[1], du[0])
+        dv = v.position - center
+        theta2 = np.arctan2(dv[1], dv[0])
+        # Check if the arc goes clockwise.
+        clockwise = np.cross(u.direction, du).item() > 0.
+        # Generate a point every 5cm apart.
+        da = distance / radius
+        offset_a = offset / radius
+        if clockwise:
+            da = -da
+            offset_a = -offset_a
+            if theta2 > theta1:
+                theta2 -= 2. * np.pi
+        else:
+            if theta2 < theta1:
+                theta2 += 2. * np.pi
+        angles = np.arange(theta1 + offset_a, theta2, da)
+        offset = distance - (theta2 - angles[-1]) * radius
+        points_x.extend(center[X] + np.cos(angles) * radius)
+        points_y.extend(center[Y] + np.sin(angles) * radius)
+    return zip(points_x, points_y)

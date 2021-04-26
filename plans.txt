@@ -1,5 +1,3 @@
-stuff to do:
-    multiple SLAM robots wandering
 
 Area coverage:
     divide world into grid cells depending on search radius
