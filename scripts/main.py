@@ -18,6 +18,7 @@ import robot_control
 import rrt
 from slam import SLAM
 from constants import *
+from potential_field import angle_difference
 
 directory = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../python')
 sys.path.insert(0, directory)
@@ -184,10 +185,14 @@ class CirclingBehaviour(object):
         self.team = team
         self.robot_number = number
 
-        self.all_poses = [pose] if number==0 else[
+        self.all_poses = [pose] if number == 0 else [
             pose if i == number else robot_control.GroundTruthPose((team, i))
             for i in range(TEAM_SIZE)
         ]
+
+    @property
+    def ready(self):
+        return all(p.ready for p in self.all_poses)
 
     def update(self):
         average_phase = sum(
@@ -199,18 +204,98 @@ class CirclingBehaviour(object):
             for relative_angle in (actual_angle - target_angle,)
         )
         average_angle = np.arctan2(average_phase[1], average_phase[0])
-        angular_speed = SPEED / self.radius
+        angular_speed = SPEED / self.radius * 0.8
         target_offset = np.pi * 2 / TEAM_SIZE * self.robot_number
         my_next_angle = average_angle + target_offset + angular_speed
         desired_position = np.array([np.cos(my_next_angle), np.sin(my_next_angle)])
         desired_position = desired_position * self.radius + self.center
 
         to_goal = desired_position - self.pose_gt.pose[:2]
-        if np.linalg.norm(to_goal) > 0.4:
+        if np.linalg.norm(to_goal) > 0.35:
             self.planner.navigate_towards(desired_position)
         else:
             u, w = robot_control.feedback_linearized(self.pose_gt.pose, to_goal, EPSILON)
             self.command_velocity.set_velocity(max(u, 0), w)
+
+
+RELATIVE_SEPARATION = 0
+RELATIVE_BEARING = 1
+desired_formation = np.array([
+    [0.3, 2 * np.pi / 3], [0.35, np.pi / 3], [0.3, -2 * np.pi / 3], [0.35, -np.pi / 3]
+])
+# control_gains = np.array([0.75, 0.75])
+control_gains = np.array([2, 8])
+
+
+class Formation(object):
+    def __init__(self, team, robot_number, pose_gt, command_velocity):
+        # type: (int, int, robot_control.GroundTruthPose, robot_control.CommandVelocity) -> None
+        self.robot_number = robot_number
+        self.desired_relative_location = desired_formation[robot_number - 1]
+        self.pose_gt = pose_gt
+        self.command_velocity = command_velocity
+
+        self.leader_gt = robot_control.GroundTruthPose((team, 0))
+
+    @property
+    def ready(self):
+        return self.leader_gt.ready
+
+    def update(self):
+        pose = self.pose_gt.pose
+        holonomic_point = pose[:2] + EPSILON * np.array([np.cos(pose[YAW]), np.sin(pose[YAW])])
+        leader_pose = self.leader_gt.pose
+        relative_location = self.relative_location(leader_pose, holonomic_point)
+
+        relative_orientation = angle_difference(leader_pose[YAW], pose[YAW])
+        gamma = angle_difference(relative_orientation + relative_location[RELATIVE_BEARING], 0)
+
+        separation = relative_location[RELATIVE_SEPARATION]
+        g_matrix = np.array([
+            [np.cos(gamma), EPSILON * np.sin(gamma)],
+            [-np.sin(gamma) / separation, EPSILON * np.cos(gamma) / separation]
+        ])
+
+        f_matrix = np.array([
+            [-np.cos(relative_location[RELATIVE_BEARING]), 0],
+            [np.sin(relative_location[RELATIVE_BEARING]) / separation, -1]
+        ])
+
+        leader_twist = self.leader_gt.twist
+
+        u, w = np.matmul(
+            np.linalg.inv(g_matrix),
+            control_gains * (self.desired_relative_location - relative_location) - np.matmul(
+                f_matrix, leader_twist
+            )
+        )
+
+        self.command_velocity.set_velocity(
+            np.clip(u, -SPEED, SPEED * 1.5),
+            np.clip(w, -np.pi / 2, np.pi / 2)
+        )
+
+    @staticmethod
+    def relative_location(leader_pose, pose):
+        vector_leader_to_this = pose[:2] - leader_pose[:2]
+        separation = np.linalg.norm(vector_leader_to_this)
+
+        vector_leader_to_this_angle = np.arctan2(vector_leader_to_this[1], vector_leader_to_this[0])
+
+        bearing = angle_difference(vector_leader_to_this_angle, leader_pose[YAW])
+
+        return np.array([separation, bearing])
+
+
+def formation_robot1_0_path(planner, pose_gt):
+    # type: (robot_control.PotentialField, robot_control.GroundTruthPose) -> None
+    if not hasattr(formation_robot1_0_path, 'at_goal'):
+        formation_robot1_0_path.at_goal = False
+
+    if not formation_robot1_0_path.at_goal and pose_gt.pose[0] < 3:
+        formation_robot1_0_path.at_goal = planner.navigate_towards(np.array([3, -1]))
+    else:
+        planner.navigate_towards(np.array([3, 1]))
 
 
 def run(args):
@@ -224,14 +309,19 @@ def run(args):
     # slam = SLAM(args.team, args.number)
     ground_truth_pose = robot_control.GroundTruthPose((args.team, args.number))
 
-    planner = robot_control.PotentialField(command_velocity, ground_truth_pose, args.team, args.number)
+    planner = robot_control.PotentialField(
+        command_velocity, ground_truth_pose, args.team, args.number,
+        avoid_team=args.task != 'formation',
+        speed=0.125 if args.task == 'formation' else SPEED
+    )
 
     exploring_behaviour = [Exploring(ground_truth_pose, planner, args.number, rate_limiter)]
     circling_behaviour = CirclingBehaviour(
-        np.array([-1, 0.75]), 0.2,
+        np.array([3, 1]), 0.225,
         ground_truth_pose, planner, command_velocity,
         args.team, args.number
     )
+    formation_behaviour = Formation(args.team, args.number, ground_truth_pose, command_velocity)
 
     def explore():
         if exploring_behaviour[0] is not None:
@@ -241,13 +331,19 @@ def run(args):
                 command_velocity.set_velocity(0, 0)
                 print('%s done' % ns_prefix)
 
-    behaviour = {'explore': explore, 'circle': circling_behaviour.update}[args.task]
+    behaviour = {
+        'explore': explore,
+        'circle': circling_behaviour.update,
+        'formation': (lambda: formation_robot1_0_path(planner,
+                                                      ground_truth_pose)) if args.number == 0 else formation_behaviour.update
+        # 'formation': explore if args.number == 0 else formation_behaviour.update
+    }[args.task]
 
     while not rospy.is_shutdown():
         # slam.update()
 
         # if not (slam.ready and ground_truth_pose.ready):
-        if not (ground_truth_pose.ready and planner.ready):
+        if not (ground_truth_pose.ready and planner.ready and formation_behaviour.ready):
             rate_limiter.sleep()
             continue
 

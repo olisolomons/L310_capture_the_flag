@@ -170,6 +170,7 @@ class GroundTruthPose(object):
     def __init__(self, robot_id, name_fmt='turtlebot3_%d_%dburger'):
         rospy.Subscriber('/gazebo/model_states', ModelStates, self.callback)
         self._pose = np.array([np.nan, np.nan, np.nan], dtype=np.float32)
+        self._twist = np.array([np.nan, np.nan], dtype=np.float32)
         self._name = name_fmt % robot_id
 
     def callback(self, msg):
@@ -186,6 +187,9 @@ class GroundTruthPose(object):
             msg.pose[idx].orientation.w])
         self._pose[YAW] = yaw
 
+        self._twist[0] = msg.twist[idx].linear.x
+        self._twist[1] = msg.twist[idx].angular.z
+
     @property
     def ready(self):
         return not np.isnan(self._pose[0])
@@ -194,14 +198,22 @@ class GroundTruthPose(object):
     def pose(self):
         return self._pose
 
+    @property
+    def twist(self):
+        return self._twist
+
 
 class PotentialField(MovementPlanner):
-    def __init__(self, command_velocity, ground_truth_pose, robot_team, robot_number):
-        # type: (CommandVelocity, GroundTruthPose, int, int) -> None
+    def __init__(self, command_velocity, ground_truth_pose, robot_team, robot_number, avoid_team=True, speed=SPEED):
+        # type: (CommandVelocity, GroundTruthPose, int, int, bool, float) -> None
         self.command_velocity = command_velocity
         self.ground_truth_pose = ground_truth_pose
+        self.avoid_team = avoid_team
+        self.speed = speed
 
-        self.team_poses = [GroundTruthPose((robot_team, i)) for i in range(TEAM_SIZE) if i != robot_number]
+        self.team_poses = []
+        if self.avoid_team:
+            self.team_poses = [GroundTruthPose((robot_team, i)) for i in range(TEAM_SIZE) if i != robot_number]
 
     @property
     def ready(self):
@@ -216,9 +228,9 @@ class PotentialField(MovementPlanner):
             return True
 
         obstacles = list(OBSTACLE_POSITIONS) + [pose_gt.pose[:2] for pose_gt in self.team_poses]
-        radii = [OBSTACLE_RADIUS] * len(OBSTACLE_POSITIONS) + [0.175] * (TEAM_SIZE - 1)
+        radii = [OBSTACLE_RADIUS] * len(OBSTACLE_POSITIONS) + [0.175] * len(self.team_poses)
 
-        v = potential_field.get_velocity(pose[:2], goal, obstacles, radii)
+        v = potential_field.get_velocity(pose[:2], goal, obstacles, radii, speed_cap=self.speed)
 
         u, w = feedback_linearized(pose, v, epsilon=EPSILON)
 

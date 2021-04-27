@@ -50,7 +50,7 @@ def cap(v, max_speed):
     return v
 
 
-def get_velocity(position, goal, obstacle_positions, obstacle_radii, mode='all', do_cap=True):
+def get_velocity(position, goal, obstacle_positions, obstacle_radii, mode='all', speed_cap=MAX_SPEED):
     if mode in ('goal', 'all'):
         v_goal = get_velocity_to_reach_goal(position, goal)
     else:
@@ -63,7 +63,7 @@ def get_velocity(position, goal, obstacle_positions, obstacle_radii, mode='all',
     else:
         v_avoid = np.zeros(2, dtype=np.float32)
     v = v_goal + v_avoid
-    return cap(v, max_speed=MAX_SPEED) if do_cap else v
+    return cap(v, max_speed=speed_cap)
 
 
 def plot_obstacle_function():
