@@ -154,7 +154,7 @@ class Exploring(object):
                     self.planner.command_velocity.set_velocity(0, 0)
 
                     self.send_area_request()
-                elif rospy.Time.now().to_sec() - self.awaiting_adverts > 1.5:
+                elif rospy.Time.now().to_sec() - self.awaiting_adverts > 0.5:
                     if self.collected_adverts:
                         best = min(self.collected_adverts, key=lambda advert: advert['closest'])
                         msg = {'type': 'specific_request', 'recipient': best['sender'], 'sender': self.robot_number}

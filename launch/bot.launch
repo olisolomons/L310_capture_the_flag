@@ -2,5 +2,5 @@
 	<arg name="team" default="1"/>
 	<arg name="number" default="1"/>
 
-	<node pkg="capture_the_flag" type="test.py" args="--team=$(arg team) --number=$(arg number)" name="test_$(arg team)_$(arg number)" output="screen"></node>
+	<node pkg="capture_the_flag" type="main.py" args="--team=$(arg team) --number=$(arg number)" name="test_$(arg team)_$(arg number)" output="screen"/>
 </launch>
