@@ -173,6 +173,46 @@ class Exploring(object):
         self.collected_adverts = []
 
 
+class CirclingBehaviour(object):
+    def __init__(self, center, radius, pose, planner, command_velocity, team, number):
+        # type: (np.ndarray, float, robot_control.GroundTruthPose, robot_control.PotentialField,robot_control.CommandVelocity, int, int) -> None
+        self.center = center
+        self.radius = radius
+        self.pose_gt = pose
+        self.planner = planner
+        self.command_velocity = command_velocity
+        self.team = team
+        self.robot_number = number
+
+        self.all_poses = [pose] if number==0 else[
+            pose if i == number else robot_control.GroundTruthPose((team, i))
+            for i in range(TEAM_SIZE)
+        ]
+
+    def update(self):
+        average_phase = sum(
+            np.array([np.cos(relative_angle), np.sin(relative_angle)])
+            for i, pose_gt in enumerate(self.all_poses)
+            for to_center in (pose_gt.pose[:2] - self.center,)
+            for target_angle in (np.pi * 2 / TEAM_SIZE * i,)
+            for actual_angle in (np.arctan2(to_center[1], to_center[0]),)
+            for relative_angle in (actual_angle - target_angle,)
+        )
+        average_angle = np.arctan2(average_phase[1], average_phase[0])
+        angular_speed = SPEED / self.radius
+        target_offset = np.pi * 2 / TEAM_SIZE * self.robot_number
+        my_next_angle = average_angle + target_offset + angular_speed
+        desired_position = np.array([np.cos(my_next_angle), np.sin(my_next_angle)])
+        desired_position = desired_position * self.radius + self.center
+
+        to_goal = desired_position - self.pose_gt.pose[:2]
+        if np.linalg.norm(to_goal) > 0.4:
+            self.planner.navigate_towards(desired_position)
+        else:
+            u, w = robot_control.feedback_linearized(self.pose_gt.pose, to_goal, EPSILON)
+            self.command_velocity.set_velocity(max(u, 0), w)
+
+
 def run(args):
     rospy.init_node('rrt_navigation')
 
@@ -185,7 +225,23 @@ def run(args):
     ground_truth_pose = robot_control.GroundTruthPose((args.team, args.number))
 
     planner = robot_control.PotentialField(command_velocity, ground_truth_pose, args.team, args.number)
-    exploring_behaviour = Exploring(ground_truth_pose, planner, args.number, rate_limiter)
+
+    exploring_behaviour = [Exploring(ground_truth_pose, planner, args.number, rate_limiter)]
+    circling_behaviour = CirclingBehaviour(
+        np.array([-1, 0.75]), 0.2,
+        ground_truth_pose, planner, command_velocity,
+        args.team, args.number
+    )
+
+    def explore():
+        if exploring_behaviour[0] is not None:
+            done = exploring_behaviour[0].update()
+            if done:
+                exploring_behaviour[0] = None
+                command_velocity.set_velocity(0, 0)
+                print('%s done' % ns_prefix)
+
+    behaviour = {'explore': explore, 'circle': circling_behaviour.update}[args.task]
 
     while not rospy.is_shutdown():
         # slam.update()
@@ -195,12 +251,7 @@ def run(args):
             rate_limiter.sleep()
             continue
 
-        if exploring_behaviour is not None:
-            done = exploring_behaviour.update()
-            if done:
-                exploring_behaviour = None
-                command_velocity.set_velocity(0, 0)
-                print('%s done' % ns_prefix)
+        behaviour()
 
         rate_limiter.sleep()
 
@@ -210,6 +261,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Runs RRT navigation')
     parser.add_argument('--team', help='Robot team', type=int)
     parser.add_argument('--number', help='Robot number', type=int)
+    parser.add_argument('--task', help='The task to perform', type=str)
 
     args, unknown = parser.parse_known_args()
     try:

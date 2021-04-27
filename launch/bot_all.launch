@@ -4,20 +4,24 @@
 
   <arg name="total_robots" default="4"/>
   <arg name="robot_number" default="0"/>
+  <arg name="task" default="explore"/>
 
   <include file="$(find capture_the_flag)/launch/bot.launch" if="$(eval arg('team') in ('both', 1))">
        <arg name="team" value="1"/>
        <arg name="number" value="$(arg robot_number)"/>
+       <arg name="task" value="$(arg task)"/>
   </include>
   <include file="$(find capture_the_flag)/launch/bot.launch" if="$(eval arg('team') in ('both', 2))">
        <arg name="team" value="2"/>
        <arg name="number" value="$(arg robot_number)"/>
+       <arg name="task" value="$(arg task)"/>
   </include>
 
   <include file="$(find capture_the_flag)/launch/bot_all.launch" if="$(eval arg('total_robots') > arg('robot_number') + 1)">
        <arg name="robot_number" value="$(eval arg('robot_number') + 1)"/>
        <arg name="total_robots" value="$(arg total_robots)"/>
        <arg name="team" value="$(arg team)"/>
+       <arg name="task" value="$(arg task)"/>
    </include>
 
 </launch>
