@@ -204,16 +204,17 @@ class GroundTruthPose(object):
 
 
 class PotentialField(MovementPlanner):
-    def __init__(self, command_velocity, ground_truth_pose, robot_team, robot_number, avoid_team=True, speed=SPEED):
-        # type: (CommandVelocity, GroundTruthPose, int, int, bool, float) -> None
+    def __init__(self, command_velocity, ground_truth_pose, robot_team, robot_number, team_size, avoid_team=True, speed=SPEED):
+        # type: (CommandVelocity, GroundTruthPose, int, int, int, bool, float) -> None
         self.command_velocity = command_velocity
         self.ground_truth_pose = ground_truth_pose
+        self.team_size = team_size
         self.avoid_team = avoid_team
         self.speed = speed
 
         self.team_poses = []
         if self.avoid_team:
-            self.team_poses = [GroundTruthPose((robot_team, i)) for i in range(TEAM_SIZE) if i != robot_number]
+            self.team_poses = [GroundTruthPose((robot_team, i)) for i in range(self.team_size) if i != robot_number]
 
     @property
     def ready(self):

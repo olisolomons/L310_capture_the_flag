@@ -10,11 +10,13 @@
        <arg name="team" value="1"/>
        <arg name="number" value="$(arg robot_number)"/>
        <arg name="task" value="$(arg task)"/>
+       <arg name="team_size" value="$(arg total_robots)"/>
   </include>
   <include file="$(find capture_the_flag)/launch/bot.launch" if="$(eval arg('team') in ('both', 2))">
        <arg name="team" value="2"/>
        <arg name="number" value="$(arg robot_number)"/>
        <arg name="task" value="$(arg task)"/>
+      <arg name="team_size" value="$(arg total_robots)"/>
   </include>
 
   <include file="$(find capture_the_flag)/launch/bot_all.launch" if="$(eval arg('total_robots') > arg('robot_number') + 1)">

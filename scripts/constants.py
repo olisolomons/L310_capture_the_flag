@@ -1,5 +1,5 @@
 import numpy as _np
-SPEED = 0.2
+SPEED = 0.4
 EPSILON = 0.1
 SENSOR_RANGE = 1.
 
@@ -17,5 +17,4 @@ OBSTACLE_POSITIONS = _np.array([
 ])
 OBSTACLE_RADIUS = 0.3
 
-TEAM_SIZE = 5
 

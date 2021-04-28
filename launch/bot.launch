@@ -1,7 +1,10 @@
 <launch>
-	<arg name="team" default="1"/>
-	<arg name="number" default="1"/>
-	<arg name="task" default="explore"/>
+    <arg name="team" default="1"/>
+    <arg name="number" default="1"/>
+    <arg name="task" default="explore"/>
+    <arg name="team_size" default="4"/>
 
-	<node pkg="capture_the_flag" type="main.py" args="--team=$(arg team) --number=$(arg number) --task=$(arg task)" name="test_$(arg team)_$(arg number)" output="screen"/>
+    <node pkg="capture_the_flag" type="main.py"
+          args="--team=$(arg team) --number=$(arg number) --task=$(arg task) --team_size=$(arg team_size)"
+          name="test_$(arg team)_$(arg number)" output="screen"/>
 </launch>

@@ -1,5 +1,6 @@
-
-Area coverage:
-    divide world into grid cells depending on search radius
-    divide arena into chunks, each zig-zags through the area
-    when done,
+Video clips:
+ - single robot vs circular pursuit
+ - various formations vs circular pursuit
+    - X formation
+    - line
+    - diamond + outlier
